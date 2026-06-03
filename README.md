@@ -100,3 +100,15 @@ This v1 does not perform OCR, fuzzy deduplication, gazetteer lookup, geocoding, 
 - Ehrmann, M., Hamdi, A., Pontes, E. L., Romanello, M., & Doucet, A. (2021). Named Entity Recognition and Classification on Historical Documents: A Survey. arXiv:2109.11406.
   
 - Dekker, N., Kuhn, J., van Erp, M., et al. Evaluating Named Entity Recognition Tools for Extracting Social Networks from Novels.
+
+## Further work ideas 
+
+The points below focus primarily on technical and methodological improvements. The dataset itself also opens a number of promising avenues for literary and critical interpretation that remain to be explored.
+
+* it would be intersting to explore the dataset with Perec litterary scholars
+* having an interface to explore and review the results would be useful, especially to validate the model's output and identify common errors
+* deduplication and canonicalization: merge variants ("rue Vilin", "la rue Vilin", "Rue Vilin").
+* I wonder wether the prompts we use could be "specialized" for Perec's work, and whethere it would improve the results
+* confidence calibration: identify which extractions are reliable and which require human review.
+* external comparison : ideally we would like to compare the results of this LLM-based approach with a more traditional NER pipeline, with domain-specific tuning.
+* it would interesting to explore wether we can extend detection to characters, organizations, and other entities
