@@ -10,6 +10,18 @@ This project starts from a simpler hypothesis: for a bounded corpus — here, th
 
 The goal is to produce a reviewable place index while exploring how well LLMs handle literary geography.
 
+# Context
+
+This project originates in a contribution to **_La ville en infographies_**, a volume in the CNRS Éditions **Homo Graphicus** collection.
+
+One of the planned sections, tentatively titled **"Perec : une géographie personnelle de Paris"**, seeks to explore the geography of Georges Perec's work through computational methods. The objective is modest: to construct a place index from a literary corpus and use it as a starting point for a spatial reading of the oeuvre.
+
+The project benefits from access to a unique corpus of Georges Perec's works made available by the rights holders, thanks in particular to the support of **Mathilde Moaty**.
+
+It also follows from conversations with **Martine Drozdz** around *Lieux*, Georges Perec's long-term project of serial observation and memory, published posthumously in 2022. Perec's work remains a major reference for contemporary geographical practices attentive to ordinary places, repetition, and the passage of time (cf. *Lieux Communs*, 2023).
+
+In a sense, this project reverses the movement. Rather than using geography to think with Perec, it returns to Perec's texts themselves and asks what a computational geography of the oeuvre might reveal.
+
 ## Install
 
 This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
