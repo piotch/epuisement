@@ -2,6 +2,10 @@
   <img src="docs/logo-rectangle.png" alt="Épuisement" width="200">
 </p>
 
+This project reads Georges Perec's texts to find passages that seem to point to places, then uses their context to identify them more precisely and build an index of the places — or possible places — present in the work. A first run of the analysis found more than 10,000 place references across 27 books; the results are available in [`output/20260602_place_mentions.csv`](output/20260602_place_mentions.csv).
+
+## Background and motivation
+
 This project originates in a contribution to **_La ville en infographies_**, a volume in the CNRS Éditions **[Homo Graphicus](https://www.cnrseditions.fr/collection/homo-graphicus/)** collection.
 
 One of the planned sections, tentatively titled **"Perec : une géographie personnelle de Paris"**, seeks to explore the geography of Georges Perec's work through computational methods. The objective is modest: to construct a place index from a literary corpus and use it as a starting point for a spatial reading of the oeuvre.
