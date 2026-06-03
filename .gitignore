@@ -1,5 +1,6 @@
 data/
-output/
+output/*
+!output/*_place_mentions.csv
 .venv/
 __pycache__/
 *.py[cod]
