@@ -26,7 +26,7 @@ This project starts from a simpler hypothesis: for a bounded corpus — here, th
 
 The goal is to produce a reviewable place index while exploring how well LLMs handle literary geography.
 
-## Runs
+## Run history
 
 ### 2 June 2026
 
