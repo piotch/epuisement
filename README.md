@@ -22,6 +22,17 @@ This project starts from a simpler hypothesis: for a bounded corpus — here, th
 
 The goal is to produce a reviewable place index while exploring how well LLMs handle literary geography.
 
+## Runs
+
+### 2 June 2026
+
+* version 0.0.1
+* input tokens: 2.971M
+* output tokens: 728.148K
+* cost: $0.31 (gpt-4o-mini)
+
+10165 place mentions extracted
+
 ## Install
 
 This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
@@ -55,6 +66,7 @@ Options:
 --limit-files 2         # process only first N files
 --limit-chunks 10       # process only first N chunks globally
 --resume                # skip successful chunks in output/intermediate_mentions.jsonl
+--workers 4             # run N LLM requests in parallel
 --dry-run               # extract/chunk and log counts without calling an LLM
 ```
 
