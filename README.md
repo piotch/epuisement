@@ -2,16 +2,6 @@
   <img src="docs/logo-rectangle.png" alt="Épuisement" width="200">
 </p>
 
-A Python CLI tool that scans EPUB and PDF files, extracts real-world place mentions with an LLM, and writes CSV files for review.
-
-Entity extraction and normalization are hard problems. Tools such as `spaCy` and `stanza` can be used for this task, but as far as I understand (cf. "Selected References" section), they require domain-specific tuning to produce high-quality results on literary texts.
-
-This project starts from a simpler hypothesis: for a bounded corpus — here, the works of Georges Perec — the cost of using an LLM directly is manageable, and the gain in contextual understanding may outweigh the additional API cost.
-
-The goal is to produce a reviewable place index while exploring how well LLMs handle literary geography.
-
-# Context
-
 This project originates in a contribution to **_La ville en infographies_**, a volume in the CNRS Éditions **[Homo Graphicus](https://www.cnrseditions.fr/collection/homo-graphicus/)** collection.
 
 One of the planned sections, tentatively titled **"Perec : une géographie personnelle de Paris"**, seeks to explore the geography of Georges Perec's work through computational methods. The objective is modest: to construct a place index from a literary corpus and use it as a starting point for a spatial reading of the oeuvre.
@@ -21,6 +11,16 @@ The project benefits from access to a unique corpus of Georges Perec's works mad
 It also follows from conversations with **[Martine Drozdz](https://www.mfo.ac.uk/people/martine-drozdz)** around *Lieux*, Georges Perec's long-term project of serial observation and memory, published posthumously in 2022. Perec's work remains a major reference for contemporary geographical practices attentive to ordinary places, repetition, and the passage of time (cf. *Nos Lieux Communs*, 2023).
 
 In a sense, this project reverses the movement. Rather than using geography to think with Perec, it returns to Perec's texts themselves and asks what a computational geography of Perec's oeuvre might reveal.
+
+## Technical overview
+
+This is a a Python CLI tool that scans EPUB and PDF files, extracts real-world place mentions with an LLM, and writes CSV files for review.
+
+Entity extraction and normalization are hard problems. Tools such as `spaCy` and `stanza` can be used for this task, but as far as I understand (cf. "Selected References" section), they require domain-specific tuning to produce high-quality results on literary texts.
+
+This project starts from a simpler hypothesis: for a bounded corpus — here, the works of Georges Perec — the cost of using an LLM directly is manageable, and the gain in contextual understanding may outweigh the additional API cost.
+
+The goal is to produce a reviewable place index while exploring how well LLMs handle literary geography.
 
 ## Install
 
