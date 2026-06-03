@@ -7,6 +7,7 @@ import csv
 import json
 import re
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -338,6 +339,55 @@ def call_llm(model_id: str, prompt: str) -> str:
     return str(response)
 
 
+def process_chunk_with_llm(model_id: str, chunk: Chunk) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Process one chunk and return its checkpoint record plus processing-log row."""
+    try:
+        raw = call_llm(model_id, make_prompt(chunk))
+        data = parse_json_response(raw)
+        mentions = validate_mentions(data, chunk)
+        record = {
+            "source_file": chunk.source_file,
+            "source_type": chunk.source_type,
+            "source_ref": chunk.source_ref,
+            "chunk_id": chunk.chunk_id,
+            "status": "success",
+            "error": "",
+            "characters": len(chunk.text),
+            "mentions_found": len(mentions),
+            "mentions": mentions,
+        }
+        log_row = {
+            "source_file": chunk.source_file,
+            "chunk_id": chunk.chunk_id,
+            "status": "success",
+            "error": "",
+            "characters": len(chunk.text),
+            "mentions_found": len(mentions),
+        }
+        return record, log_row
+    except Exception as exc:
+        record = {
+            "source_file": chunk.source_file,
+            "source_type": chunk.source_type,
+            "source_ref": chunk.source_ref,
+            "chunk_id": chunk.chunk_id,
+            "status": "failure",
+            "error": str(exc),
+            "characters": len(chunk.text),
+            "mentions_found": 0,
+            "mentions": [],
+        }
+        log_row = {
+            "source_file": chunk.source_file,
+            "chunk_id": chunk.chunk_id,
+            "status": "failure",
+            "error": str(exc),
+            "characters": len(chunk.text),
+            "mentions_found": 0,
+        }
+        return record, log_row
+
+
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -476,6 +526,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-files", type=int, default=None, help="Process only first N files")
     parser.add_argument("--limit-chunks", type=int, default=None, help="Process only first N chunks globally")
     parser.add_argument("--resume", action="store_true", help="Skip chunks already successful in checkpoint")
+    parser.add_argument("--workers", type=int, default=1, help="Number of parallel LLM requests")
     parser.add_argument("--dry-run", action="store_true", help="Extract/chunk and log without calling an LLM")
     return parser.parse_args()
 
@@ -492,6 +543,7 @@ def main() -> None:
     prior_records = load_intermediate(intermediate_path)
     skip_ids = completed_chunk_ids(prior_records) if args.resume else set()
     log_rows: list[dict[str, Any]] = []
+    chunks_to_process: list[Chunk] = []
     processed_chunks = 0
     discovered_chunks = 0
     estimated_llm_chunks = 0
@@ -566,47 +618,34 @@ def main() -> None:
                 processed_chunks += 1
                 continue
 
-            try:
-                raw = call_llm(args.model, make_prompt(chunk))
-                data = parse_json_response(raw)
-                mentions = validate_mentions(data, chunk)
-                record = {
-                    "source_file": chunk.source_file,
-                    "source_type": chunk.source_type,
-                    "source_ref": chunk.source_ref,
-                    "chunk_id": chunk.chunk_id,
-                    "status": "success",
-                    "error": "",
-                    "characters": len(chunk.text),
-                    "mentions_found": len(mentions),
-                    "mentions": mentions,
-                }
-                append_jsonl(intermediate_path, record)
-                log_rows.append(
-                    {
+            chunks_to_process.append(chunk)
+
+        if args.limit_chunks is not None and discovered_chunks >= args.limit_chunks:
+            break
+
+    if not args.dry_run and chunks_to_process:
+        workers = max(1, args.workers)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(process_chunk_with_llm, args.model, chunk): chunk for chunk in chunks_to_process
+            }
+            for future in tqdm(as_completed(futures), total=len(futures), desc="LLM chunks"):
+                chunk = futures[future]
+                try:
+                    record, log_row = future.result()
+                except Exception as exc:  # unexpected errors outside per-chunk handling
+                    record = {
                         "source_file": chunk.source_file,
+                        "source_type": chunk.source_type,
+                        "source_ref": chunk.source_ref,
                         "chunk_id": chunk.chunk_id,
-                        "status": "success",
-                        "error": "",
+                        "status": "failure",
+                        "error": str(exc),
                         "characters": len(chunk.text),
-                        "mentions_found": len(mentions),
+                        "mentions_found": 0,
+                        "mentions": [],
                     }
-                )
-            except Exception as exc:
-                record = {
-                    "source_file": chunk.source_file,
-                    "source_type": chunk.source_type,
-                    "source_ref": chunk.source_ref,
-                    "chunk_id": chunk.chunk_id,
-                    "status": "failure",
-                    "error": str(exc),
-                    "characters": len(chunk.text),
-                    "mentions_found": 0,
-                    "mentions": [],
-                }
-                append_jsonl(intermediate_path, record)
-                log_rows.append(
-                    {
+                    log_row = {
                         "source_file": chunk.source_file,
                         "chunk_id": chunk.chunk_id,
                         "status": "failure",
@@ -614,11 +653,9 @@ def main() -> None:
                         "characters": len(chunk.text),
                         "mentions_found": 0,
                     }
-                )
-            processed_chunks += 1
-
-        if args.limit_chunks is not None and discovered_chunks >= args.limit_chunks:
-            break
+                append_jsonl(intermediate_path, record)
+                log_rows.append(log_row)
+                processed_chunks += 1
 
     all_records = [] if args.dry_run else load_intermediate(intermediate_path)
     mention_rows = dedupe_mentions(rows_from_success_records(all_records))
