@@ -1,4 +1,4 @@
-"""Build a literary place index from local EPUB and PDF files."""
+"""Build a literary spatial mention index from local EPUB and PDF files."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -29,17 +30,78 @@ MODEL_PRICE_PER_1M_TOKENS_USD = {
     # Check current provider pricing before relying on this for budgeting.
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
 }
-PLACE_TYPES = {
+MENTION_KINDS = {"named_place", "generic_spatial_entity"}
+SPATIAL_TYPES = {
     "city",
     "street",
+    "square",
     "district",
-    "landmark",
-    "building",
     "country",
     "region",
-    "river",
+    "water",
     "natural_feature",
+    "building",
+    "institution",
+    "room",
+    "domestic_space",
+    "threshold",
+    "circulation",
+    "public_space",
+    "commercial_space",
+    "work_space",
+    "transport_space",
+    "vehicle",
+    "micro_place",
     "other",
+}
+USAGES = {"literal", "metaphorical", "uncertain"}
+MICRO_PLACE_WHITELIST = {"lit", "table", "bureau", "chaise", "fauteuil", "bibliotheque"}
+INCIDENTAL_OBJECT_BLACKLIST = {
+    "objet",
+    "livre",
+    "cahier",
+    "classeur",
+    "ticket",
+    "sacoche",
+    "metal",
+    "tocsin",
+    "pylone",
+    "tableau",
+    "affiche",
+    "poster",
+    "machine",
+    "verseuse",
+    "miroir",
+    "plateau",
+    "cendrier",
+    "bouteille",
+    "boite",
+    "lettre",
+    "lampadaire",
+}
+GENERIC_OTHER_WHITELIST = {
+    "mur",
+    "fenetre",
+    "cour",
+    "parties communes",
+    "sol",
+    "plafond",
+    "toit",
+    "loggia",
+    "cave",
+    "grenier",
+    "couloir",
+    "palier",
+    "escalier",
+    "maison",
+    "passage",
+    "trottoir",
+    "ville",
+    "campagne",
+    "monde",
+    "espace",
+    "banlieue",
+    "zone libre",
 }
 MENTION_COLUMNS = [
     "work",
@@ -47,18 +109,20 @@ MENTION_COLUMNS = [
     "source_type",
     "source_ref",
     "chunk_id",
-    "place_text",
-    "normalized_place",
-    "place_type",
+    "mention_text",
+    "normalized_text",
+    "mention_kind",
+    "spatial_type",
+    "usage",
     "city",
     "region",
     "country",
     "confidence",
     "context",
 ]
-INDEX_COLUMNS = [
-    "normalized_place",
-    "place_type",
+NAMED_PLACE_INDEX_COLUMNS = [
+    "normalized_text",
+    "spatial_type",
     "city",
     "region",
     "country",
@@ -67,6 +131,15 @@ INDEX_COLUMNS = [
     "sources",
     "example_context",
 ]
+SPATIAL_TYPE_INDEX_COLUMNS = [
+    "work",
+    "mention_kind",
+    "spatial_type",
+    "normalized_text",
+    "mention_count",
+    "example_context",
+]
+FILTERED_MENTION_COLUMNS = MENTION_COLUMNS + ["filter_reason"]
 LOG_COLUMNS = ["source_file", "chunk_id", "status", "error", "characters", "mentions_found"]
 
 
@@ -178,6 +251,57 @@ def extract_sections(path: Path) -> list[Section]:
     return []
 
 
+def looks_like_front_matter_or_toc(section: Section) -> bool:
+    """Conservatively skip paratext likely to produce noisy spatial mentions."""
+    ref = section.source_ref.lower()
+    text = section.text.strip()
+    compact = re.sub(r"\s+", " ", text.lower())
+    squashed = re.sub(r"\s+", "", compact)
+
+    ref_patterns = [
+        "table des matières",
+        "table des matieres",
+        "copyright",
+        "isbn",
+        "la librairie du xxi",
+        "ident1-",
+    ]
+    if section.source_type == "epub" and any(pattern in ref for pattern in ref_patterns):
+        return True
+
+    if not compact:
+        return True
+
+    if "tabledesmatières" in squashed or "tabledesmatieres" in squashed:
+        return True
+
+    front_matter_markers = [
+        "isbn",
+        "©",
+        "copyright",
+        "dépôt légal",
+        "depot legal",
+        "achevé d'imprimer",
+        "acheve d'imprimer",
+        "éditions du seuil",
+        "editions du seuil",
+        "christian bourgois éditeur",
+        "christian bourgois editeur",
+        "www.",
+        "ce document numérique",
+    ]
+    marker_count = sum(1 for marker in front_matter_markers if marker in compact)
+    if marker_count >= 2:
+        return True
+
+    # EPUB collection/catalogue pages often consist of long lists of authors/titles.
+    # Skip them when the section reference already looks paratextual.
+    if section.source_type == "epub" and "collection" in compact[:500] and len(compact) > 2000:
+        return True
+
+    return False
+
+
 def split_at_boundary(text: str, target: int) -> int:
     """Choose a paragraph/sentence boundary at or before target when practical."""
     if len(text) <= target:
@@ -222,15 +346,17 @@ def chunk_section(section: Section, max_chars: int, overlap: int) -> list[Chunk]
 
 
 def make_prompt(chunk: Chunk) -> str:
-    return f"""Extract real-world place mentions from the text below.
+    return f"""Extract spatial mentions from the French literary text below.
 
 Return only valid JSON matching this schema:
 {{
   "mentions": [
     {{
-      "place_text": "string",
-      "normalized_place": "string",
-      "place_type": "city | street | district | landmark | building | country | region | river | natural_feature | other | null",
+      "mention_text": "string",
+      "normalized_text": "string",
+      "mention_kind": "named_place | generic_spatial_entity",
+      "spatial_type": "city | street | square | district | country | region | water | natural_feature | building | institution | room | domestic_space | threshold | circulation | public_space | commercial_space | work_space | transport_space | vehicle | micro_place | other",
+      "usage": "literal | metaphorical | uncertain",
       "city": "string or null",
       "region": "string or null",
       "country": "string or null",
@@ -240,20 +366,55 @@ Return only valid JSON matching this schema:
   ]
 }}
 
+Definitions:
+
+1. named_place
+Extract explicit named places: cities, countries, regions, streets, squares, districts, landmarks, buildings, institutions used as places, rivers, islands, seas, mountains, stations, parks, etc.
+
+Named places may be real-world, fictional, uncertain, or constructed within the work. This is important for Perec: extract `rue Simon-Crubellier` and similar constructed named places. Do not omit them because they may not be geocodable.
+
+Examples: Paris, rue Vilin, place Saint-Sulpice, avenue Junot, Mabillon, Ellis Island, Londres, Tunisie, la Seine, Montparnasse, rue Simon-Crubellier.
+
+2. generic_spatial_entity
+Also extract generic but spatially meaningful entities, especially those relevant to Georges Perec's attention to ordinary and infra-ordinary space.
+
+Examples: chambre, lit, table, appartement, immeuble, escalier, palier, cour, rue, quartier, café, cuisine, bureau, cave, grenier, fenêtre, porte, mur, maison, passage, trottoir, ville, campagne, monde, espace, métro, autobus, train, pays.
+
+Use `micro_place` only for small-scale supports where a body or activity can settle: lit, table, bureau, chaise, fauteuil, bibliothèque. This project is interested in Perec's infra-ordinary spaces, not in ordinary objects as such.
+
 Rules:
-- Extract only places explicitly present in the text.
-- Include cities, countries, regions, streets, districts, landmarks, buildings, rivers, seas, mountains, and other real geographic places.
-- Include literary references to real places.
-- Exclude people unless the name clearly refers to a place in context.
-- Exclude purely fictional places unless the text strongly implies they correspond to a real-world place.
-- Do not invent locations.
-- Preserve exact mention in place_text.
-- Normalize spelling in normalized_place.
-- Fill city, region, and country only when strongly supported by the text or very common knowledge.
-- Use null when uncertain.
+
+- Extract only mentions explicitly present in the text.
+- Preserve the exact surface form in mention_text.
+- Use normalized_text for a conservative French/local canonical form.
+- All normalized_text values should be in French or in the local original form.
+- Never translate French place names into English.
+- Do not try to decide definitively whether a named place is real or fictional.
+- Do not invent geographic metadata.
+- Fill city, region, and country only when directly supported by the text or very common knowledge.
+- For Paris streets, squares, métro stations, monuments, and districts, city = Paris and country = France when confident.
+- For generic_spatial_entity, usually leave city, region, and country null unless the text explicitly links the entity to a named place.
+- For generic_spatial_entity, extract nouns or noun phrases that function as spatial settings, containers, routes, thresholds, infrastructures, or stable micro-spatial supports in the passage.
+- Do not extract ordinary objects merely because they are physically located somewhere.
+- For micro_place, extract only these small-scale supports where a body or activity can settle: lit, table, bureau, chaise, fauteuil, bibliothèque.
+- Do not extract other furniture such as armoire, placard, étagère, commode, buffet, vaisselier, canapé, miroir, lavabo, or baignoire.
+- Exclude food, materials, decorative objects, tools, documents, artworks, machines, signs, posters, small movable objects, storage furniture, and incidental props, unless they explicitly designate a place.
+- Do not extract living beings or body parts as spatial entities.
+- Use spatial_type = other rarely. Do not use other as a fallback for ordinary objects.
+- Set usage = literal for concrete spatial description, metaphorical for figurative or conceptual spatial uses, and uncertain when the distinction is unclear.
+- Exclude people, publishers, collection titles, book titles, section titles, and organizations unless the wording clearly refers to a physical place.
+- Ignore tables of contents and front matter such as title pages, copyright pages, publishing-house addresses, collection catalogues, ISBN pages, and lists of works. Do not extract spatial-looking section titles from a table of contents.
+- Exclude purely abstract uses when there is no spatial meaning.
+- Extract each distinct mention occurrence in the passage, not only one example per type. If the same expression appears repeatedly in different sentences, include each occurrence with its own context. If it is repeated several times in the same short sentence or list, one mention is sufficient.
 - Include a short context sentence or phrase.
-- confidence should reflect extraction and normalization certainty, not importance.
-- Return an empty mentions array if no places are found.
+- Return an empty mentions array if no spatial mentions are found.
+
+Confidence scale:
+
+- 0.95: exact, explicit, unambiguous mention; normalization certain.
+- 0.80: clear spatial mention; minor uncertainty about type or metadata.
+- 0.60: spatial mention is plausible but ambiguous or context-dependent.
+- 0.40: uncertain; normally omit unless the mention is analytically important.
 
 Provenance:
 work: {chunk.work}
@@ -286,20 +447,63 @@ def parse_json_response(text: str) -> dict[str, Any]:
     return data
 
 
-def validate_mentions(data: dict[str, Any], chunk: Chunk) -> list[dict[str, Any]]:
+def normalize_for_filter(text: str) -> str:
+    """Lowercase and remove accents for simple deterministic filters."""
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def filter_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]+", normalize_for_filter(text)))
+
+
+def should_keep_spatial_mention(row: dict[str, Any]) -> tuple[bool, str]:
+    """Deterministically remove object noise from generic spatial mentions."""
+    if row.get("mention_kind") == "named_place":
+        return True, ""
+
+    text = normalize_for_filter(f"{row.get('mention_text', '')} {row.get('normalized_text', '')}")
+    tokens = filter_tokens(text)
+
+    if tokens & INCIDENTAL_OBJECT_BLACKLIST:
+        return False, "incidental_object_blacklist"
+
+    spatial_type = row.get("spatial_type", "")
+    if spatial_type == "micro_place" and not (tokens & MICRO_PLACE_WHITELIST):
+        return False, "micro_place_not_whitelisted"
+
+    if spatial_type == "other":
+        if any(term in text for term in GENERIC_OTHER_WHITELIST):
+            return True, ""
+        return False, "generic_other_not_whitelisted"
+
+    return True, ""
+
+
+def validate_mentions(data: dict[str, Any], chunk: Chunk) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Validate and normalize model mention objects for CSV output."""
     rows: list[dict[str, Any]] = []
+    filtered_rows: list[dict[str, Any]] = []
     for item in data.get("mentions", []):
         if not isinstance(item, dict):
             continue
-        place_text = str(item.get("place_text") or "").strip()
-        normalized = str(item.get("normalized_place") or place_text).strip()
-        if not place_text or not normalized:
+        mention_text = str(item.get("mention_text") or "").strip()
+        normalized = str(item.get("normalized_text") or mention_text).strip()
+        if not mention_text or not normalized:
             continue
-        place_type = item.get("place_type")
-        place_type = str(place_type).strip() if place_type is not None else "other"
-        if place_type not in PLACE_TYPES:
-            place_type = "other"
+
+        mention_kind = str(item.get("mention_kind") or "generic_spatial_entity").strip()
+        if mention_kind not in MENTION_KINDS:
+            mention_kind = "generic_spatial_entity"
+
+        spatial_type = str(item.get("spatial_type") or "other").strip()
+        if spatial_type not in SPATIAL_TYPES:
+            spatial_type = "other"
+
+        usage = str(item.get("usage") or "uncertain").strip()
+        if usage not in USAGES:
+            usage = "uncertain"
+
         try:
             confidence = float(item.get("confidence", 0))
         except (TypeError, ValueError):
@@ -311,17 +515,25 @@ def validate_mentions(data: dict[str, Any], chunk: Chunk) -> list[dict[str, Any]
             "source_type": chunk.source_type,
             "source_ref": chunk.source_ref,
             "chunk_id": chunk.chunk_id,
-            "place_text": place_text,
-            "normalized_place": normalized,
-            "place_type": place_type,
+            "mention_text": mention_text,
+            "normalized_text": normalized,
+            "mention_kind": mention_kind,
+            "spatial_type": spatial_type,
+            "usage": usage,
             "city": none_to_empty(item.get("city")),
             "region": none_to_empty(item.get("region")),
             "country": none_to_empty(item.get("country")),
             "confidence": f"{confidence:.3f}",
             "context": str(item.get("context") or "").strip(),
         }
-        rows.append(row)
-    return rows
+        keep, reason = should_keep_spatial_mention(row)
+        if keep:
+            rows.append(row)
+        else:
+            filtered = dict(row)
+            filtered["filter_reason"] = reason
+            filtered_rows.append(filtered)
+    return rows, filtered_rows
 
 
 def none_to_empty(value: Any) -> str:
@@ -335,7 +547,15 @@ def none_to_empty(value: Any) -> str:
 def call_llm(model_id: str, prompt: str) -> str:
     """Call the configured llm model with retries."""
     model = llm.get_model(model_id)
-    response = model.prompt(prompt, system="You extract place mentions and return only valid JSON.")
+    response = model.prompt(
+        prompt,
+        system=(
+            "You extract spatial mentions from French literary texts for a scholarly project on Georges Perec. "
+            "Return only valid JSON. Distinguish named places from generic infra-ordinary spatial entities, "
+            "and distinguish literal from metaphorical usage. Be conservative with geographic metadata. "
+            "Keep normalized names in French or local original form; never translate French place names into English."
+        ),
+    )
     return str(response)
 
 
@@ -344,7 +564,7 @@ def process_chunk_with_llm(model_id: str, chunk: Chunk) -> tuple[dict[str, Any],
     try:
         raw = call_llm(model_id, make_prompt(chunk))
         data = parse_json_response(raw)
-        mentions = validate_mentions(data, chunk)
+        mentions, filtered_mentions = validate_mentions(data, chunk)
         record = {
             "source_file": chunk.source_file,
             "source_type": chunk.source_type,
@@ -355,6 +575,7 @@ def process_chunk_with_llm(model_id: str, chunk: Chunk) -> tuple[dict[str, Any],
             "characters": len(chunk.text),
             "mentions_found": len(mentions),
             "mentions": mentions,
+            "filtered_mentions": filtered_mentions,
         }
         log_row = {
             "source_file": chunk.source_file,
@@ -376,6 +597,7 @@ def process_chunk_with_llm(model_id: str, chunk: Chunk) -> tuple[dict[str, Any],
             "characters": len(chunk.text),
             "mentions_found": 0,
             "mentions": [],
+            "filtered_mentions": [],
         }
         log_row = {
             "source_file": chunk.source_file,
@@ -424,14 +646,15 @@ def write_csv(path: Path, columns: list[str], rows: list[dict[str, Any]]) -> Non
 
 
 def dedupe_mentions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     deduped: list[dict[str, Any]] = []
     for row in rows:
         key = (
             row.get("work", ""),
             row.get("source_ref", ""),
-            row.get("place_text", ""),
-            row.get("normalized_place", ""),
+            row.get("mention_text", ""),
+            row.get("normalized_text", ""),
+            row.get("mention_kind", ""),
             row.get("context", ""),
         )
         if key in seen:
@@ -441,11 +664,13 @@ def dedupe_mentions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-def build_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_named_place_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
+        if row.get("mention_kind") != "named_place":
+            continue
         key = (
-            row.get("normalized_place", ""),
+            row.get("normalized_text", ""),
             row.get("city", ""),
             row.get("region", ""),
             row.get("country", ""),
@@ -454,7 +679,7 @@ def build_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     index_rows: list[dict[str, Any]] = []
     for (normalized, city, region, country), items in sorted(groups.items(), key=lambda kv: kv[0]):
-        type_counts = Counter(item.get("place_type", "other") for item in items)
+        type_counts = Counter(item.get("spatial_type", "other") for item in items)
         works = sorted({item.get("work", "") for item in items if item.get("work")})
         sources = sorted(
             {f"{item.get('source_file', '')}:{item.get('source_ref', '')}" for item in items if item.get("source_file")}
@@ -462,14 +687,41 @@ def build_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         example = next((item.get("context", "") for item in items if item.get("context")), "")
         index_rows.append(
             {
-                "normalized_place": normalized,
-                "place_type": type_counts.most_common(1)[0][0] if type_counts else "other",
+                "normalized_text": normalized,
+                "spatial_type": type_counts.most_common(1)[0][0] if type_counts else "other",
                 "city": city,
                 "region": region,
                 "country": country,
                 "works": "; ".join(works),
                 "mention_count": len(items),
                 "sources": "; ".join(sources),
+                "example_context": example,
+            }
+        )
+    return index_rows
+
+
+def build_spatial_type_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = (
+            row.get("work", ""),
+            row.get("mention_kind", ""),
+            row.get("spatial_type", ""),
+            row.get("normalized_text", ""),
+        )
+        groups[key].append(row)
+
+    index_rows: list[dict[str, Any]] = []
+    for (work, mention_kind, spatial_type, normalized), items in sorted(groups.items(), key=lambda kv: kv[0]):
+        example = next((item.get("context", "") for item in items if item.get("context")), "")
+        index_rows.append(
+            {
+                "work": work,
+                "mention_kind": mention_kind,
+                "spatial_type": spatial_type,
+                "normalized_text": normalized,
+                "mention_count": len(items),
                 "example_context": example,
             }
         )
@@ -511,13 +763,24 @@ def rows_from_success_records(records: Iterable[dict[str, Any]]) -> list[dict[st
     return rows
 
 
+def filtered_rows_from_success_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("status") != "success":
+            continue
+        for mention in record.get("filtered_mentions", []):
+            if isinstance(mention, dict):
+                rows.append({col: mention.get(col, "") for col in FILTERED_MENTION_COLUMNS})
+    return rows
+
+
 def discover_files(input_dir: Path, limit_files: int | None) -> list[Path]:
     files = sorted([p for p in input_dir.iterdir() if p.suffix.lower() in {".pdf", ".epub"}])
     return files[:limit_files] if limit_files else files
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extract a literary place index from EPUB/PDF files.")
+    parser = argparse.ArgumentParser(description="Extract a literary spatial mention index from EPUB/PDF files.")
     parser.add_argument("--input", default="data", help="Input folder containing .epub and .pdf files")
     parser.add_argument("--output", default="output", help="Output folder for CSV and checkpoint files")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="llm model identifier")
@@ -538,7 +801,7 @@ def main() -> None:
     input_dir = Path(args.input)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
-    intermediate_path = output_dir / "intermediate_mentions.jsonl"
+    intermediate_path = output_dir / "intermediate_spatial_mentions.jsonl"
 
     prior_records = load_intermediate(intermediate_path)
     skip_ids = completed_chunk_ids(prior_records) if args.resume else set()
@@ -568,6 +831,18 @@ def main() -> None:
 
         file_chunks: list[Chunk] = []
         for section in sections:
+            if looks_like_front_matter_or_toc(section):
+                log_rows.append(
+                    {
+                        "source_file": section.source_file,
+                        "chunk_id": f"{sanitize_id_part(section.source_ref)}:skipped",
+                        "status": "skipped_front_matter_or_toc",
+                        "error": "",
+                        "characters": len(section.text),
+                        "mentions_found": 0,
+                    }
+                )
+                continue
             file_chunks.extend(chunk_section(section, args.max_chars, args.overlap))
 
         if not file_chunks:
@@ -644,6 +919,7 @@ def main() -> None:
                         "characters": len(chunk.text),
                         "mentions_found": 0,
                         "mentions": [],
+                        "filtered_mentions": [],
                     }
                     log_row = {
                         "source_file": chunk.source_file,
@@ -659,15 +935,20 @@ def main() -> None:
 
     all_records = [] if args.dry_run else load_intermediate(intermediate_path)
     mention_rows = dedupe_mentions(rows_from_success_records(all_records))
-    index_rows = build_index(mention_rows)
+    filtered_mention_rows = filtered_rows_from_success_records(all_records)
+    named_place_index_rows = build_named_place_index(mention_rows)
+    spatial_type_index_rows = build_spatial_type_index(mention_rows)
 
-    write_csv(output_dir / "place_mentions.csv", MENTION_COLUMNS, mention_rows)
-    write_csv(output_dir / "place_index.csv", INDEX_COLUMNS, index_rows)
+    write_csv(output_dir / "spatial_mentions.csv", MENTION_COLUMNS, mention_rows)
+    write_csv(output_dir / "filtered_spatial_mentions.csv", FILTERED_MENTION_COLUMNS, filtered_mention_rows)
+    write_csv(output_dir / "named_place_index.csv", NAMED_PLACE_INDEX_COLUMNS, named_place_index_rows)
+    write_csv(output_dir / "spatial_type_index.csv", SPATIAL_TYPE_INDEX_COLUMNS, spatial_type_index_rows)
     write_csv(output_dir / "processing_log.csv", LOG_COLUMNS, log_rows)
 
     print(
         f"Files: {len(files)} | chunks seen: {discovered_chunks} | chunks processed: {processed_chunks} | "
-        f"mentions: {len(mention_rows)} | places: {len(index_rows)}"
+        f"mentions: {len(mention_rows)} | named places: {len(named_place_index_rows)} | "
+        f"spatial types: {len(spatial_type_index_rows)}"
     )
     if args.dry_run:
         print("Dry run complete: no LLM API calls were made.")
