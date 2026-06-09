@@ -1,6 +1,17 @@
 data/
+
+# Ignore generated output by default, but keep selected shareable CSVs/placeholders.
 output/*
-!output/*_place_mentions.csv
+!output/20260602_first_run/
+output/20260602_first_run/*
+!output/20260602_first_run/place_mentions.csv
+!output/20260607_calibration/
+output/20260607_calibration/*
+!output/20260607_calibration/.gitkeep
+!output/20260608_spatial_full_run/
+output/20260608_spatial_full_run/*
+!output/20260608_spatial_full_run/spatial_mentions.csv
+
 .venv/
 __pycache__/
 *.py[cod]
