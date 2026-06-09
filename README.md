@@ -28,7 +28,7 @@ The goal is to produce a reviewable place index while exploring how well LLMs ha
 
 ## Run history
 
-### 2 June 2026
+### 2nd June 2026
 
 * version 0.0.1
 * input tokens: 2.971M
@@ -36,6 +36,13 @@ The goal is to produce a reviewable place index while exploring how well LLMs ha
 * cost: $0.31 (gpt-4o-mini)
 
 10165 place mentions extracted
+
+### 8th June 2026
+
+* version 0.0.2
+* input tokens: 7.568M
+* output tokens: 1.784M
+* cost: $1.33 (gpt-4o-mini)
 
 ## Install
 
